@@ -1,0 +1,11 @@
+.env
+service_account.json
+secrets/
+.git/
+.gitignore
+README.md
+*.log
+__pycache__/
+*.pyc
+.venv/
+venv/

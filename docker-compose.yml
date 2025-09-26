@@ -1,0 +1,9 @@
+version: '3.8'
+services:
+  site-orders-parser:
+    build: .
+    env_file:
+      - .env
+    volumes:
+      - ./service_account.json:/app/service_account.json:ro
+    restart: unless-stopped
