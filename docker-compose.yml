@@ -2,6 +2,7 @@ version: '3.8'
 services:
   site-orders-parser:
     build: .
+    image: site-orders-parser:latest
     container_name: site-orders-parser
     restart: unless-stopped
     working_dir: /app
