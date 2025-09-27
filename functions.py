@@ -67,7 +67,7 @@ def get_orders_from_sites(auth_token):
             item['site'] = site
             item['order_url'] = f'https://{site}/account/manager-projects/project/{item["project"]}'
         page += 1
-        print(object)
+        print(f'{site} ok!')
             # if not object['next']:
             #     flag = False
     return orders

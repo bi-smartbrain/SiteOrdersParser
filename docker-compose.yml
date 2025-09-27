@@ -2,8 +2,15 @@ version: '3.8'
 services:
   site-orders-parser:
     build: .
-    env_file:
-      - .env
-    volumes:
-      - ./service_account.json:/app/service_account.json:ro
+    container_name: site-orders-parser
     restart: unless-stopped
+    working_dir: /app
+    environment:
+      - PYTHONUNBUFFERED=1  # Отключает буферизацию Python
+      - TZ=Europe/Moscow    # Устанавливаем часовой пояс
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
