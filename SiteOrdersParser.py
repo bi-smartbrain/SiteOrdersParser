@@ -1,7 +1,10 @@
+"""
+Скрипт для отслеживания новых заявок на сайтах компании
+"""
+
 import os
 import time
 from datetime import datetime as dt
-from sys import prefix
 
 from tg_logger import logger
 from get_tokens import get_tokens
@@ -10,10 +13,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-
-####################################################################
-#### Скрипт для обновления данных о заявках с сайтов компании ######
-####################################################################
 
 class OrdersManager:
     def __init__(self):
@@ -85,7 +84,7 @@ def main():
             print(f"{dt.now()} - Обработка завершена. Новых заявок: {new_orders_count}")
             prefix = 'пере' if start_count > 1 else ''
             if iteration_count == 1:
-                logger.debug(f"\n✅ {current_file} успешно {prefix}запустился!")
+                logger.info(f"\n✅ {current_file} успешно {prefix}запустился!")
             time.sleep(60 * 10)  # Ожидание 10 минут
             iteration_count += 1
 
