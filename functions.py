@@ -4,11 +4,10 @@ import requests
 import gspread
 from gspread.utils import rowcol_to_a1
 from tg_logger import logger
-
+from env_loader import SECRETS_PATH
 
 # Получаем путь к файлу из переменных окружения
-SERVICE_ACCOUNT_FILE = os.getenv('SERVICE_ACCOUNT_FILE')
-
+SERVICE_ACCOUNT_FILE = os.path.join(SECRETS_PATH, 'service_account.json')
 gc = gspread.service_account(filename=SERVICE_ACCOUNT_FILE)
 
 

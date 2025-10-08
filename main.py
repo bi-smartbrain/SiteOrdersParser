@@ -9,9 +9,7 @@ from datetime import datetime as dt
 from tg_logger import logger
 from get_tokens import get_tokens
 import functions as f
-from dotenv import load_dotenv
-
-load_dotenv()
+from env_loader import SECRETS_PATH
 
 
 class OrdersManager:
@@ -84,18 +82,17 @@ def main():
             print(f"{dt.now()} - Обработка завершена. Новых заявок: {new_orders_count}")
             prefix = 'пере' if start_count > 1 else ''
             if iteration_count == 1:
-                logger.info(f"\n✅ {current_file} успешно {prefix}запустился!")
+                logger.info(f"\n✅ SiteOrdersParser успешно {prefix}запустился!")
             time.sleep(60 * 10)  # Ожидание 10 минут
             iteration_count += 1
 
         except Exception as e:
             print(f"Ошибка: {e}")
-            logger.critical(f"\n❌️ {current_file} ошибка в основном цикле: {str(e)}")
+            logger.critical(f"\n❌️ SiteOrdersParser ошибка в основном цикле: {str(e)}")
             time.sleep(5)  # Задержка перезапуска
             start_count += 1
             iteration_count = 1
 
 
 if __name__ == '__main__':
-    current_file = os.path.basename(__file__)
     main()

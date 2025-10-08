@@ -2,7 +2,7 @@ import os
 from loguru import logger
 from notifiers.logging import NotificationHandler
 from dotenv import load_dotenv
-load_dotenv()
+from env_loader import SECRETS_PATH
 
 
 # Параметры для чатов 1-Андрей, 2-Таня, 3-Узкий круг
