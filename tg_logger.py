@@ -35,5 +35,5 @@ def only_success(record):
     return record["level"].name == "SUCCESS"
 
 logger.add(tg_handler_1, level="DEBUG", filter=not_success)
-logger.add(tg_handler_2, level="INFO", filter=not_success)
+# logger.add(tg_handler_2, level="INFO", filter=not_success)
 logger.add(tg_handler_3, level="SUCCESS", filter=only_success)

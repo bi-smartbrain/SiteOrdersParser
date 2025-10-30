@@ -89,7 +89,7 @@ def main():
         except Exception as e:
             print(f"Ошибка: {e}")
             logger.critical(f"\n❌️ SiteOrdersParser ошибка в основном цикле: {str(e)}")
-            time.sleep(5)  # Задержка перезапуска
+            time.sleep(60)  # Задержка перезапуска
             start_count += 1
             iteration_count = 1
 
