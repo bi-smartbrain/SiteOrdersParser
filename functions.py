@@ -2,7 +2,7 @@ import time
 import os
 import requests
 import gspread
-from gspread.utils import rowcol_to_a1
+from gspread.utils import rowcol_to_a1, ValueInputOption
 from tg_logger import logger
 from env_loader import SECRETS_PATH
 
@@ -42,7 +42,7 @@ def add_report_to_sheet(spread, sheet, report):
 
     # Записать значения в диапазон
     cell_range = f"{start_cell}:{end_cell}"
-    worksheet.update(cell_range, report, value_input_option="user_entered")
+    worksheet.update(cell_range, report, value_input_option=ValueInputOption.user_entered)
 
     print("Отчет добавлен")
 
@@ -52,19 +52,50 @@ def get_orders_from_sites(auth_token):
     params = {'size': '100'}
 
     orders = []
-    for site in ['rubrain.com', 'junbrain.com', 'engibrain.com']:
+
+    def build_order_url(site, item):
+        # Для freelance.kz даем ссылку на общий список заявок (как запрошено).
+        if site == 'freelance.kz':
+            return 'https://freelance.kz/account/all-projects/application-list'
+        return f'https://{site}/account/manager-projects/project/{item["project"]}'
+
+    for site in ['rubrain.com', 'junbrain.com', 'engibrain.com', 'freelance.kz']:
         page = 1
         # flag = True
         # while flag:
-        params['page'] = page
+        params['page'] = str(page)
         url = f'https://{site}/api/v2/applications/manager/list/?requestType=site'
-        response = requests.get(url, params=params, headers=headers)
-        response.raise_for_status()
-        object = response.json()
-        orders.extend(object['results'])
-        for item in object['results']:
+        try:
+            response = requests.get(url, params=params, headers=headers)
+
+            # freelance.kz может требовать токен, выданный именно этим доменом.
+            if response.status_code == 401 and site == 'freelance.kz':
+                from get_tokens import get_tokens
+
+                site_token = get_tokens(
+                    username=os.getenv('SITE_USERNAME'),
+                    password=os.getenv('SITE_PASSWORD'),
+                    url='https://freelance.kz/api/auth/login/?active_lang=ru',
+                )['access']
+
+                response = requests.get(
+                    url,
+                    params=params,
+                    headers={'authorization': f'Bearer {site_token}'},
+                )
+
+            response.raise_for_status()
+
+        except requests.RequestException as e:
+            logger.error(f'Ошибка при запросе заявок с {site}: {e}')
+            continue
+
+        payload = response.json()
+        results = payload.get('results') or []
+        orders.extend(results)
+        for item in results:
             item['site'] = site
-            item['order_url'] = f'https://{site}/account/manager-projects/project/{item["project"]}'
+            item['order_url'] = build_order_url(site, item)
         page += 1
         print(f'{site} ok!')
             # if not object['next']:
