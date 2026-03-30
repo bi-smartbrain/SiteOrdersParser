@@ -144,6 +144,7 @@ def get_new_report_rows(old_report, report):
 
 def take_notifications(new_rows):
     for item in new_rows:
+        site = item[12]
         tg_message = (
             f'\n🔔️ Новая заявка\n'
             f'Дата: {item[14]}\n'
@@ -152,8 +153,11 @@ def take_notifications(new_rows):
             f'Компания: {item[4]}\n'
             f'Имя: {item[8]} {item[9]}\n'
             f'📞 {item[16]}\n'
-            f'✉️ {item[10]}\n'
-            f'@karyushka @aglaya_smartbrainio @katrinkee @TsaritsaPolei @olya_smartbrain'
+            f'✉️ {item[10]}'
         )
-        logger.success(tg_message)
+
+        if site == 'freelance.kz':
+            tg_message += '\n@karyushka @aglaya_smartbrainio @katrinkee @TsaritsaPolei @olya_smartbrain'
+
+        logger.bind(site=site).success(tg_message)
         time.sleep(3)
