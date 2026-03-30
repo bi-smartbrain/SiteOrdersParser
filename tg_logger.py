@@ -9,7 +9,7 @@ from env_loader import SECRETS_PATH
 token = os.getenv("TG_TOKEN")
 chat_id_1 = os.getenv("CHAT_ID_1")
 chat_id_2 = os.getenv("CHAT_ID_2")
-chat_id_3 = os.getenv("CHAT_ID_3")
+chat_id_3 = os.getenv("CHAT_ID_5")
 
 params_chat_1 = {
     "token": token,
