@@ -152,7 +152,7 @@ def take_notifications(new_rows):
             f'Компания: {item[4]}\n'
             f'Имя: {item[8]} {item[9]}\n'
             f'📞 {item[16]}\n'
-            f'✉️ {item[10]}'
+            f'✉️ {item[10]}\n'
             f'@karyushka @aglaya_smartbrainio @katrinkee @TsaritsaPolei @olya_smartbrain'
         )
         logger.success(tg_message)
