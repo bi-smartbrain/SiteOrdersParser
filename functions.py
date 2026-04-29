@@ -69,7 +69,7 @@ def get_orders_from_sites(auth_token):
             response = requests.get(url, params=params, headers=headers)
 
             # freelance.kz может требовать токен, выданный именно этим доменом.
-            if response.status_code == 401 and site == 'freelance.kz':
+            if response.status_code in (401, 403) and site == 'freelance.kz':
                 from get_tokens import get_tokens
 
                 site_token = get_tokens(
