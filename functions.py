@@ -59,7 +59,7 @@ def get_orders_from_sites(auth_token):
             return 'https://freelance.kz/account/all-projects/application-list'
         return f'https://{site}/account/manager-projects/project/{item["project"]}'
 
-    for site in ['rubrain.com', 'junbrain.com', 'engibrain.com', 'freelance.kz']:
+    for site in ['rubrain.com', 'junbrain.com', 'engibrain.com', 'freelance.kz', 'free.uz']:
         page = 1
         # flag = True
         # while flag:
@@ -68,14 +68,14 @@ def get_orders_from_sites(auth_token):
         try:
             response = requests.get(url, params=params, headers=headers)
 
-            # freelance.kz может требовать токен, выданный именно этим доменом.
-            if response.status_code in (401, 403) and site == 'freelance.kz':
+            # Некоторые сайты (freelance.kz, free.uz) могут требовать токен, выданный именно их доменом.
+            if response.status_code in (401, 403) and site in ('freelance.kz', 'free.uz'):
                 from get_tokens import get_tokens
 
                 site_token = get_tokens(
                     username=os.getenv('SITE_USERNAME'),
                     password=os.getenv('SITE_PASSWORD'),
-                    url='https://freelance.kz/api/auth/login/?active_lang=ru',
+                    url=f'https://{site}/api/auth/login/?active_lang=ru',
                 )['access']
 
                 response = requests.get(
