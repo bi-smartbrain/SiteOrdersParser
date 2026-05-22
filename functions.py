@@ -156,7 +156,7 @@ def take_notifications(new_rows):
             f'✉️ {item[10]}'
         )
 
-        if site == 'freelance.kz':
+        if site in ('freelance.kz', 'free.uz'):
             tg_message += '\n@karyushka @aglaya_smartbrainio @katrinkee @TsaritsaPolei @olya_smartbrain'
 
         logger.bind(site=site).success(tg_message)
