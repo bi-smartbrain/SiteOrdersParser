@@ -143,11 +143,14 @@ def get_new_report_rows(old_report, report):
 
 
 def take_notifications(new_rows):
+    freelance_regions = {'freelance.kz': 'КАЗАХСТАН', 'free.uz': 'УЗБЕКИСТАН'}
     for item in new_rows:
         site = item[12]
+        region_line = f'Регион: {freelance_regions[site]}\n' if site in freelance_regions else ''
         tg_message = (
             f'\n🔔️ Новая заявка\n'
             f'Дата: {item[14]}\n'
+            f'{region_line}'
             f'Ссылка: {item[13]}\n'
             f'Текст: {item[11]}\n'
             f'Компания: {item[4]}\n'
@@ -156,7 +159,7 @@ def take_notifications(new_rows):
             f'✉️ {item[10]}'
         )
 
-        if site in ('freelance.kz', 'free.uz'):
+        if site in freelance_regions:
             tg_message += '\n@karyushka @aglaya_smartbrainio @katrinkee @TsaritsaPolei @olya_smartbrain'
 
         logger.bind(site=site).success(tg_message)
