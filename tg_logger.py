@@ -42,12 +42,15 @@ def only_success(record):
     return record["level"].name == "SUCCESS"
 
 
+FREELANCE_SITES = {"freelance.kz", "free.uz"}
+
+
 def only_success_freelance(record):
-    return only_success(record) and record["extra"].get("site") == "freelance.kz"
+    return only_success(record) and record["extra"].get("site") in FREELANCE_SITES
 
 
 def only_success_not_freelance(record):
-    return only_success(record) and record["extra"].get("site") != "freelance.kz"
+    return only_success(record) and record["extra"].get("site") not in FREELANCE_SITES
 
 logger.add(tg_handler_1, level="DEBUG", filter=not_success)
 # logger.add(tg_handler_2, level="INFO", filter=not_success)
