@@ -56,9 +56,6 @@ def get_orders_from_sites(auth_token):
     tokens_by_site = {}
 
     def build_order_url(site, item):
-        # Для freelance.kz даем ссылку на общий список заявок (как запрошено).
-        if site == 'freelance.kz':
-            return 'https://freelance.kz/account/all-projects/application-list'
         return f'https://{site}/account/manager-projects/project/{item["project"]}'
 
     for site in ['rubrain.com', 'junbrain.com', 'engibrain.com', 'freelance.kz', 'free.uz']:
