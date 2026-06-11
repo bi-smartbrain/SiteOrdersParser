@@ -1,5 +1,6 @@
 import time
 import os
+import re
 import requests
 import gspread
 from gspread.utils import rowcol_to_a1, ValueInputOption
@@ -52,6 +53,7 @@ def get_orders_from_sites(auth_token):
     params = {'size': '100'}
 
     orders = []
+    tokens_by_site = {}
 
     def build_order_url(site, item):
         # Для freelance.kz даем ссылку на общий список заявок (как запрошено).
@@ -65,6 +67,7 @@ def get_orders_from_sites(auth_token):
         # while flag:
         params['page'] = str(page)
         url = f'https://{site}/api/v2/applications/manager/list/?requestType=site'
+        site_token = auth_token
         try:
             response = requests.get(url, params=params, headers=headers)
 
@@ -90,6 +93,7 @@ def get_orders_from_sites(auth_token):
             logger.error(f'Ошибка при запросе заявок с {site}: {e}')
             continue
 
+        tokens_by_site[site] = site_token
         payload = response.json()
         results = payload.get('results') or []
         orders.extend(results)
@@ -100,7 +104,61 @@ def get_orders_from_sites(auth_token):
         print(f'{site} ok!')
             # if not object['next']:
             #     flag = False
-    return orders
+    return orders, tokens_by_site
+
+
+def _normalize(text):
+    return re.sub(r'\s+', ' ', text or '').strip()
+
+
+def combine_message_and_descr(message, descr):
+    """Объединяет короткий message заявки и descr проекта.
+
+    Правила: если descr пустой — берём message; если message пустой или совпадает
+    с descr (после нормализации пробелов) либо содержится в нём — берём descr;
+    иначе склеиваем оба через разделитель.
+    """
+    m = (message or '').strip()
+    d = (descr or '').strip()
+    if not d:
+        return m
+    if not m:
+        return d
+    nm, nd = _normalize(m), _normalize(d)
+    if nm == nd or nm in nd:
+        return d
+    return f'{m}\n---\n{d}'
+
+
+def fetch_project_descr(site, project_id, token):
+    """Тянет поле descr из /api/projects/{id}/. Возвращает строку или None."""
+    if project_id in (None, ''):
+        return None
+    try:
+        r = requests.get(
+            f'https://{site}/api/projects/{project_id}/',
+            headers={'authorization': f'Bearer {token}'},
+            timeout=15,
+        )
+        if r.status_code == 200:
+            return r.json().get('descr')
+        logger.warning(f'descr проекта {project_id} с {site}: статус {r.status_code}')
+    except Exception as e:
+        logger.warning(f'descr проекта {project_id} с {site}: {e}')
+    return None
+
+
+def enrich_with_project_descr(rows, tokens_by_site):
+    """Для каждой строки отчёта подтягивает descr связанного проекта и
+    заменяет колонку с текстом заявки на объединённый текст."""
+    for row in rows:
+        site = row[12]
+        project_id = row[3]
+        token = tokens_by_site.get(site)
+        if not token:
+            continue
+        descr = fetch_project_descr(site, project_id, token)
+        row[11] = combine_message_and_descr(row[11], descr)
 
 
 def create_report(orders):

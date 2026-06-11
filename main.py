@@ -38,7 +38,7 @@ class OrdersManager:
         """Обработка заявок - за одно обращение к платформе"""
         # Получаем последние заявки с сайта
         print("Получаем последние 100 заявок с сайтов...")
-        orders = f.get_orders_from_sites(self.auth_token)
+        orders, tokens_by_site = f.get_orders_from_sites(self.auth_token)
         report = f.create_report(orders)
 
         # Сравниваем с имеющимся отчетом
@@ -46,6 +46,9 @@ class OrdersManager:
 
         if new_rows:
             print(f"Найдено {len(new_rows)} новых заявок")
+
+            # Обогащаем текст заявок описанием связанного проекта
+            f.enrich_with_project_descr(new_rows, tokens_by_site)
 
             # Добавляем новые строки в Google Таблицу
             f.add_report_to_sheet(self.spread, self.sheet, new_rows)
