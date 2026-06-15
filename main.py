@@ -47,8 +47,8 @@ class OrdersManager:
         if new_rows:
             print(f"Найдено {len(new_rows)} новых заявок")
 
-            # Обогащаем текст заявок описанием связанного проекта
-            f.enrich_with_project_descr(new_rows, tokens_by_site)
+            # Подтягиваем контакты клиента (email/phone) из detail-эндпоинта
+            f.enrich_with_contacts(new_rows, tokens_by_site)
 
             # Добавляем новые строки в Google Таблицу
             f.add_report_to_sheet(self.spread, self.sheet, new_rows)

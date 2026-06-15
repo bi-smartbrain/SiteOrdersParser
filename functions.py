@@ -1,6 +1,7 @@
 import time
 import os
 import re
+import html
 import requests
 import gspread
 from gspread.utils import rowcol_to_a1, ValueInputOption
@@ -10,6 +11,14 @@ from env_loader import SECRETS_PATH
 # Получаем путь к файлу из переменных окружения
 SERVICE_ACCOUNT_FILE = os.path.join(SECRETS_PATH, 'service_account.json')
 gc = gspread.service_account(filename=SERVICE_ACCOUNT_FILE)
+
+# После релиза freelance.kz/free.uz старый endpoint /api/v2/applications/manager/list/
+# перестал отдавать свежие записи, а у новых записей post_date/created заметно отличаются
+# от того, что хранится в нашей таблице. Поэтому дедуп через старые ключи не сработает —
+# жёстко обрезаем по времени: всё, что создано после этой отметки, считаем потенциально новым.
+# Значение выбрано между created последнего записанного проекта (15.06 11:03:53.634481)
+# и created первого пост-релизного проекта (15.06 14:04:58).
+NEW_ENDPOINT_CUTOFF = '2026-06-15T12:00:00+03:00'
 
 
 def get_sheet_range(spread, incom_sheet, incom_range):
@@ -50,25 +59,18 @@ def add_report_to_sheet(spread, sheet, report):
 
 def get_orders_from_sites(auth_token):
     headers = {'authorization': f'Bearer {auth_token}'}
-    params = {'size': '100'}
+    params = {'size': '100', 'page': '1'}
 
     orders = []
     tokens_by_site = {}
 
-    def build_order_url(site, item):
-        return f'https://{site}/account/manager-projects/project/{item["project"]}'
-
     for site in ['rubrain.com', 'junbrain.com', 'engibrain.com', 'freelance.kz', 'free.uz']:
-        page = 1
-        # flag = True
-        # while flag:
-        params['page'] = str(page)
-        url = f'https://{site}/api/v2/applications/manager/list/?requestType=site'
+        url = f'https://{site}/api/v2/project/manager/control/mine/list/'
         site_token = auth_token
         try:
             response = requests.get(url, params=params, headers=headers)
 
-            # Некоторые сайты (freelance.kz, free.uz) могут требовать токен, выданный именно их доменом.
+            # freelance.kz / free.uz могут требовать токен, выданный именно их доменом.
             if response.status_code in (401, 403) and site in ('freelance.kz', 'free.uz'):
                 from get_tokens import get_tokens
 
@@ -93,107 +95,90 @@ def get_orders_from_sites(auth_token):
         tokens_by_site[site] = site_token
         payload = response.json()
         results = payload.get('results') or []
-        orders.extend(results)
         for item in results:
             item['site'] = site
-            item['order_url'] = build_order_url(site, item)
-        page += 1
+            item['order_url'] = f'https://{site}/account/manager-projects/project/{item["id"]}'
+            orders.append(item)
         print(f'{site} ok!')
-            # if not object['next']:
-            #     flag = False
     return orders, tokens_by_site
 
 
-def _normalize(text):
-    return re.sub(r'\s+', ' ', text or '').strip()
+def _strip_html(text):
+    """Чистит HTML-теги из текста и декодирует HTML-сущности."""
+    if not text:
+        return ''
+    text = re.sub(r'<[^>]+>', '', text)
+    return html.unescape(text).strip()
 
 
-def combine_message_and_descr(message, descr):
-    """Объединяет короткий message заявки и descr проекта.
-
-    Правила: если descr пустой — берём message; если message пустой или совпадает
-    с descr (после нормализации пробелов) либо содержится в нём — берём descr;
-    иначе склеиваем оба через разделитель.
-    """
-    m = (message or '').strip()
-    d = (descr or '').strip()
-    if not d:
-        return m
-    if not m:
-        return d
-    nm, nd = _normalize(m), _normalize(d)
-    if nm == nd or nm in nd:
-        return d
-    return f'{m}\n---\n{d}'
-
-
-def fetch_project_descr(site, project_id, token):
-    """Тянет поле descr из /api/projects/{id}/. Возвращает строку или None."""
-    if project_id in (None, ''):
-        return None
-    try:
-        r = requests.get(
-            f'https://{site}/api/projects/{project_id}/',
-            headers={'authorization': f'Bearer {token}'},
-            timeout=15,
-        )
-        if r.status_code == 200:
-            return r.json().get('descr')
-        logger.warning(f'descr проекта {project_id} с {site}: статус {r.status_code}')
-    except Exception as e:
-        logger.warning(f'descr проекта {project_id} с {site}: {e}')
-    return None
-
-
-def enrich_with_project_descr(rows, tokens_by_site):
-    """Для каждой строки отчёта подтягивает descr связанного проекта и
-    заменяет колонку с текстом заявки на объединённый текст."""
+def enrich_with_contacts(rows, tokens_by_site):
+    """Для каждой новой строки тянет email и phone клиента из detail-эндпоинта
+    /api/projects/{id}/ — в списочной выдаче их нет."""
     for row in rows:
         site = row[12]
         project_id = row[3]
         token = tokens_by_site.get(site)
-        if not token:
+        if not token or project_id in (None, ''):
             continue
-        descr = fetch_project_descr(site, project_id, token)
-        row[11] = combine_message_and_descr(row[11], descr)
+        try:
+            r = requests.get(
+                f'https://{site}/api/projects/{project_id}/',
+                headers={'authorization': f'Bearer {token}'},
+                timeout=15,
+            )
+            if r.status_code != 200:
+                logger.warning(f'contacts проекта {project_id} с {site}: статус {r.status_code}')
+                continue
+            customer = (r.json().get('customer') or {})
+            row[10] = customer.get('email') or ''
+            phone = customer.get('phone') or ''
+            row[16] = phone.lstrip('+') if phone else ''
+        except Exception as e:
+            logger.warning(f'contacts проекта {project_id} с {site}: {e}')
 
 
 def create_report(orders):
     report = [['id', 'post_date', 'source', 'project', 'company', 'creator', 'sta0tus', 'type', 'first_name', 'last_name', 'email', 'mesage', 'site', 'order_url', 'post_dtime', 'dt_id', 'phone']]
     for order in orders:
-        report_row = []
-        phone = order.get('phone', '')
-        phone = phone.replace('+', '') if phone else ''
-        report_row.append(order['id'])
-        report_row.append(order['post_date'][:10])
-        report_row.append(order['source'])
-        report_row.append(order['project'])
-        report_row.append(order['company'])
-        report_row.append(order['creator'])
-        report_row.append(order['status'])
-        report_row.append(order['type'])
-        report_row.append(order['first_name'])
-        report_row.append(order['last_name'])
-        email = order['email'] if order['email'][0] != '+' else order['email'][1:]
-        report_row.append(email)
-        report_row.append(order['message'])
-        report_row.append(order['site'])
-        report_row.append(order['order_url'])
-        report_row.append(order['post_date'][:16].replace('T', ' '))
-        report_row.append(order['post_date'])
-        report_row.append(phone)
+        customer = order.get('customer') or {}
+        created = order.get('created') or ''
+        project_id = order.get('id')
+        report_row = [
+            project_id,                                # A id (в новой модели = id проекта)
+            created[:10],                              # B post_date (только дата)
+            '',                                        # C source (поле потеряно в новой модели)
+            project_id,                                # D project (тот же id проекта)
+            customer.get('company') or '',             # E company
+            '',                                        # F creator (поле потеряно)
+            order.get('manager_status') or '',         # G sta0tus
+            order.get('project_type') or '',           # H type
+            customer.get('first_name') or '',          # I first_name
+            customer.get('last_name') or '',           # J last_name
+            '',                                        # K email — обогащается из detail
+            _strip_html(order.get('descr')),           # L mesage (текст проекта без HTML)
+            order.get('site'),                         # M site
+            order.get('order_url'),                    # N order_url
+            created[:16].replace('T', ' '),            # O post_dtime
+            created,                                   # P dt_id (для дедупа)
+            '',                                        # Q phone — обогащается из detail
+        ]
         report.append(report_row)
     return report
 
 
 def get_new_report_rows(old_report, report):
-    ordersID = []
-    for old_row in old_report:
-        ordersID.append(old_row[15])
+    """Новой считается строка, у которой created строго больше cutoff-времени
+    релиза И её timestamp ещё не записан в таблицу (in-memory защита от повторов
+    внутри одного запуска)."""
+    old_keys = set(row[15] for row in old_report)
     new_rows = []
     for row in report[1:]:
-        if row[15] not in ordersID:
-            new_rows.append(row)
+        created = row[15] or ''
+        if created <= NEW_ENDPOINT_CUTOFF:
+            continue
+        if created in old_keys:
+            continue
+        new_rows.append(row)
     return new_rows
 
 
