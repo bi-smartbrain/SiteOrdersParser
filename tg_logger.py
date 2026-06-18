@@ -23,13 +23,13 @@ params_chat_2 = {
 params_chat_3 = {
     "token": token,
     "chat_id": chat_id_3,
-    "parse_mode": "HTML",
+    "parse_mode": "html",
 }
 
 params_chat_5 = {
     "token": token,
     "chat_id": chat_id_5,
-    "parse_mode": "HTML",
+    "parse_mode": "html",
 }
 
 tg_handler_1 = NotificationHandler("telegram", defaults=params_chat_1)
