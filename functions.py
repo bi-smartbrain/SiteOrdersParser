@@ -7,6 +7,7 @@ import gspread
 from gspread.utils import rowcol_to_a1, ValueInputOption
 from tg_logger import logger
 from env_loader import SECRETS_PATH
+from currency_rates import convert as convert_currency
 
 # Получаем путь к файлу из переменных окружения
 SERVICE_ACCOUNT_FILE = os.path.join(SECRETS_PATH, 'service_account.json')
@@ -216,16 +217,31 @@ def _html_escape(text):
 
 
 def _format_budget(budget, currency):
-    """Форматирует бюджет с валютой; если бюджета нет — 'По договоренности'."""
+    """Форматирует бюджет с валютой и конвертацией в USD/RUB.
+    Если бюджета нет — 'По договоренности'."""
     if not budget:
         return 'По договоренности'
     try:
-        b = int(float(budget))
-        formatted = f'{b:,}'.replace(',', ' ')
+        amount = float(budget)
     except (TypeError, ValueError):
-        formatted = str(budget)
+        return str(budget)
+
     cur = (currency or '').upper()
-    return f'{formatted} {cur}'.strip()
+    formatted = f'{int(amount):,}'.replace(',', ' ')
+    base = f'{formatted} {cur}'.strip()
+
+    converted = []
+    if cur != 'USD':
+        usd = convert_currency(amount, cur, 'USD')
+        if usd is not None:
+            converted.append(f'~${int(round(usd))}')
+    if cur != 'RUB':
+        rub = convert_currency(amount, cur, 'RUB')
+        if rub is not None:
+            converted.append(f'~₽{int(round(rub))}')
+    if converted:
+        return f'{base} ({", ".join(converted)})'
+    return base
 
 
 def _format_mentions():
