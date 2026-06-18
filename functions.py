@@ -5,7 +5,7 @@ import html
 import requests
 import gspread
 from gspread.utils import rowcol_to_a1, ValueInputOption
-from tg_logger import logger
+from tg_logger import logger, token as TG_TOKEN, chat_id_3 as CHAT_BRAINS, chat_id_5 as CHAT_FREELANCE
 from env_loader import SECRETS_PATH
 from currency_rates import convert as convert_currency
 
@@ -280,8 +280,38 @@ def build_notification(item):
     return '\n'.join(lines)
 
 
+def _send_telegram_message(chat_id, message):
+    """Прямой POST в Bot API. Возвращает (ok: bool, info: str с диагностикой)."""
+    try:
+        r = requests.post(
+            f'https://api.telegram.org/bot{TG_TOKEN}/sendMessage',
+            data={
+                'chat_id': chat_id,
+                'text': message,
+                'parse_mode': 'HTML',
+                'disable_web_page_preview': 'true',
+            },
+            timeout=30,
+        )
+    except Exception as e:
+        return False, f'exception: {e}'
+    if r.status_code == 200:
+        return True, 'ok'
+    return False, f'status {r.status_code}: {r.text[:300]}'
+
+
 def take_notifications(new_rows):
+    """Шлёт уведомление по каждой новой заявке в общий чат напрямую через Bot API.
+    При неудаче пишет critical-лог в личку, но не прерывает обработку остальных."""
     for item in new_rows:
         site = item[12]
-        logger.bind(site=site).success(build_notification(item))
+        project_id = item[0]
+        target_chat = CHAT_FREELANCE if site in ('freelance.kz', 'free.uz') else CHAT_BRAINS
+        message = build_notification(item)
+        ok, info = _send_telegram_message(target_chat, message)
+        if not ok:
+            logger.critical(
+                f'❌ Не удалось отправить уведомление о проекте {project_id} ({site}) '
+                f'в чат {target_chat}: {info}'
+            )
         time.sleep(3)

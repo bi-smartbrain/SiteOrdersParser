@@ -1,60 +1,21 @@
 import os
 from loguru import logger
 from notifiers.logging import NotificationHandler
-from dotenv import load_dotenv
 from env_loader import SECRETS_PATH
 
-
-# Параметры для чатов 1-Андрей, 2-Таня, 3-Узкий круг
+# Токен и chat_id остаются открытыми для импорта из functions.py — там
+# уведомления о заявках отправляются напрямую через Bot API, минуя
+# обёртку notifiers, чтобы исключить расхождения в валидации параметров.
 token = os.getenv("TG_TOKEN")
-chat_id_1 = os.getenv("CHAT_ID_1")
-chat_id_2 = os.getenv("CHAT_ID_2")
-chat_id_3 = os.getenv("CHAT_ID_3")
-chat_id_5 = os.getenv("CHAT_ID_5")
+chat_id_1 = os.getenv("CHAT_ID_1")  # личный чат: служебные сообщения, ошибки
+chat_id_3 = os.getenv("CHAT_ID_3")  # общий чат: уведомления о заявках с brain-сайтов
+chat_id_5 = os.getenv("CHAT_ID_5")  # общий чат: уведомления о заявках с фриланс-сайтов
 
+# Через loguru + notifiers идут только служебные сообщения (старт/перезапуск,
+# критические ошибки) в личный чат. Boring plain text, без parse_mode.
 params_chat_1 = {
     "token": token,
     "chat_id": chat_id_1,
 }
-params_chat_2 = {
-    "token": token,
-    "chat_id": chat_id_2,
-}
-params_chat_3 = {
-    "token": token,
-    "chat_id": chat_id_3,
-    "parse_mode": "html",
-}
-
-params_chat_5 = {
-    "token": token,
-    "chat_id": chat_id_5,
-    "parse_mode": "html",
-}
-
 tg_handler_1 = NotificationHandler("telegram", defaults=params_chat_1)
-tg_handler_2 = NotificationHandler("telegram", defaults=params_chat_2)
-tg_handler_3 = NotificationHandler("telegram", defaults=params_chat_3)
-tg_handler_5 = NotificationHandler("telegram", defaults=params_chat_5)
-
-def not_success(record):
-    return record["level"].name != "SUCCESS"
-
-def only_success(record):
-    return record["level"].name == "SUCCESS"
-
-
-FREELANCE_SITES = {"freelance.kz", "free.uz"}
-
-
-def only_success_freelance(record):
-    return only_success(record) and record["extra"].get("site") in FREELANCE_SITES
-
-
-def only_success_not_freelance(record):
-    return only_success(record) and record["extra"].get("site") not in FREELANCE_SITES
-
-logger.add(tg_handler_1, level="DEBUG", filter=not_success)
-# logger.add(tg_handler_2, level="INFO", filter=not_success)
-logger.add(tg_handler_3, level="SUCCESS", filter=only_success_not_freelance)
-logger.add(tg_handler_5, level="SUCCESS", filter=only_success_freelance)
+logger.add(tg_handler_1, level="DEBUG")
