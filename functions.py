@@ -65,7 +65,7 @@ def get_orders_from_sites(auth_token):
     tokens_by_site = {}
 
     for site in ['rubrain.com', 'junbrain.com', 'engibrain.com', 'freelance.kz', 'free.uz']:
-        url = f'https://{site}/api/v2/project/manager/control/mine/list/'
+        url = f'https://{site}/api/v2/project/manager/control/list/'
         site_token = auth_token
         try:
             response = requests.get(url, params=params, headers=headers)
@@ -111,9 +111,22 @@ def _strip_html(text):
     return html.unescape(text).strip()
 
 
+def _truncate_words(text, max_len=500):
+    """Обрезает текст до max_len символов по границе слова, в конце ставит '…'."""
+    if not text or len(text) <= max_len:
+        return text or ''
+    cut = text[:max_len].rsplit(' ', 1)[0].rstrip(' ,;:.-')
+    return f'{cut}…'
+
+
+CONTACT_TIMEOUT_PLACEHOLDER = 'тайм-аут запроса'
+
+
 def enrich_with_contacts(rows, tokens_by_site):
-    """Для каждой новой строки тянет email и phone клиента из detail-эндпоинта
-    /api/projects/{id}/ — в списочной выдаче их нет."""
+    """Для каждой новой строки тянет email, phone, budget и currency из
+    detail-эндпоинта /api/projects/{id}/ — в списочной выдаче их нет.
+    При таймауте/ошибке пишет placeholder в email/phone и логирует только
+    в stdout, чтобы не засорять личный чат менеджера."""
     for row in rows:
         site = row[12]
         project_id = row[3]
@@ -127,18 +140,25 @@ def enrich_with_contacts(rows, tokens_by_site):
                 timeout=15,
             )
             if r.status_code != 200:
-                logger.warning(f'contacts проекта {project_id} с {site}: статус {r.status_code}')
+                print(f'enrich_with_contacts: проект {project_id} ({site}) status={r.status_code}')
+                row[10] = CONTACT_TIMEOUT_PLACEHOLDER
+                row[16] = CONTACT_TIMEOUT_PLACEHOLDER
                 continue
-            customer = (r.json().get('customer') or {})
+            data = r.json()
+            customer = data.get('customer') or {}
             row[10] = customer.get('email') or ''
             phone = customer.get('phone') or ''
             row[16] = phone.lstrip('+') if phone else ''
+            row[18] = data.get('budget') if data.get('budget') is not None else ''
+            row[19] = data.get('currency') or ''
         except Exception as e:
-            logger.warning(f'contacts проекта {project_id} с {site}: {e}')
+            print(f'enrich_with_contacts: проект {project_id} ({site}) error: {e}')
+            row[10] = CONTACT_TIMEOUT_PLACEHOLDER
+            row[16] = CONTACT_TIMEOUT_PLACEHOLDER
 
 
 def create_report(orders):
-    report = [['id', 'post_date', 'source', 'project', 'company', 'creator', 'sta0tus', 'type', 'first_name', 'last_name', 'email', 'mesage', 'site', 'order_url', 'post_dtime', 'dt_id', 'phone']]
+    report = [['id', 'post_date', 'source', 'project', 'company', 'creator', 'sta0tus', 'type', 'first_name', 'last_name', 'email', 'mesage', 'site', 'order_url', 'post_dtime', 'dt_id', 'phone', 'name', 'budget', 'currency']]
     for order in orders:
         customer = order.get('customer') or {}
         created = order.get('created') or ''
@@ -161,6 +181,9 @@ def create_report(orders):
             created[:16].replace('T', ' '),            # O post_dtime
             created,                                   # P dt_id (для дедупа)
             '',                                        # Q phone — обогащается из detail
+            order.get('name') or '',                   # R name (название проекта)
+            '',                                        # S budget — обогащается из detail
+            '',                                        # T currency — обогащается из detail
         ]
         report.append(report_row)
     return report
@@ -182,25 +205,67 @@ def get_new_report_rows(old_report, report):
     return new_rows
 
 
-def take_notifications(new_rows):
+FREELANCE_MENTIONS = ['@karyushka', '@katrinkee', '@TsaritsaPolei', '@olya_smartbrain', '@Softek']
+
+
+def _html_escape(text):
+    """Эскейпит `<`, `>`, `&` для безопасной вставки в HTML parse_mode."""
+    if text in (None, ''):
+        return ''
+    return html.escape(str(text), quote=False)
+
+
+def _format_budget(budget, currency):
+    """Форматирует бюджет с валютой; если бюджета нет — 'По договоренности'."""
+    if not budget:
+        return 'По договоренности'
+    try:
+        b = int(float(budget))
+        formatted = f'{b:,}'.replace(',', ' ')
+    except (TypeError, ValueError):
+        formatted = str(budget)
+    cur = (currency or '').upper()
+    return f'{formatted} {cur}'.strip()
+
+
+def _format_mentions():
+    """Собирает строку упоминаний, каждый тэг целиком курсивом."""
+    return ' '.join(f'<i>{m}</i>' for m in FREELANCE_MENTIONS)
+
+
+def build_notification(item):
+    """Собирает текст уведомления в формате HTML (parse_mode=HTML)."""
     freelance_regions = {'freelance.kz': 'КАЗАХСТАН', 'free.uz': 'УЗБЕКИСТАН'}
+    site = item[12]
+    descr_short = _truncate_words(item[11] or '', 500)
+
+    lines = [
+        '',
+        '🔔️ Новая заявка на проект',
+        '',
+        f'<b>Дата:</b> {_html_escape(item[14])}',
+    ]
+    if site in freelance_regions:
+        lines.append(f'<b>Регион:</b> {freelance_regions[site]}')
+    lines.extend([
+        f'<b>Проект {_html_escape(item[0])}:</b> {_html_escape(item[17])}',
+        f'<b>Бюджет:</b> {_html_escape(_format_budget(item[18], item[19]))}',
+        f'<b>Описание:</b> {_html_escape(descr_short)}',
+        '',
+        f'<b>Ссылка:</b> {_html_escape(item[13])}',
+        f'<b>Компания:</b> {_html_escape(item[4])}',
+        f'<b>Имя:</b> {_html_escape(item[8])} {_html_escape(item[9])}',
+        f'📞 {_html_escape(item[16])}',
+        f'✉️ {_html_escape(item[10])}',
+    ])
+    if site in freelance_regions:
+        lines.append('')  # пустая строка-отступ перед списком упоминаний
+        lines.append(_format_mentions())
+    return '\n'.join(lines)
+
+
+def take_notifications(new_rows):
     for item in new_rows:
         site = item[12]
-        region_line = f'Регион: {freelance_regions[site]}\n' if site in freelance_regions else ''
-        tg_message = (
-            f'\n🔔️ Новая заявка\n'
-            f'Дата: {item[14]}\n'
-            f'{region_line}'
-            f'Ссылка: {item[13]}\n'
-            f'Текст: {item[11]}\n'
-            f'Компания: {item[4]}\n'
-            f'Имя: {item[8]} {item[9]}\n'
-            f'📞 {item[16]}\n'
-            f'✉️ {item[10]}'
-        )
-
-        if site in freelance_regions:
-            tg_message += '\n@karyushka @aglaya_smartbrainio @katrinkee @TsaritsaPolei @olya_smartbrain'
-
-        logger.bind(site=site).success(tg_message)
+        logger.bind(site=site).success(build_notification(item))
         time.sleep(3)
