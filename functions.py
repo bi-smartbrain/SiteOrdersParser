@@ -104,20 +104,38 @@ def get_orders_from_sites(auth_token):
     return orders, tokens_by_site
 
 
-def _strip_html(text):
-    """Чистит HTML-теги из текста и декодирует HTML-сущности."""
+def _html_to_text(text):
+    """Превращает HTML в plain-text, сохраняя структуру: абзацы и переносы
+    строк становятся '\\n', элементы списка — '• ', прочие теги вычищаются.
+    Результат пригоден и для Google Sheet, и для Telegram (HTML parse_mode
+    не парсит то, чего тут больше нет)."""
     if not text:
         return ''
-    text = re.sub(r'<[^>]+>', '', text)
-    return html.unescape(text).strip()
+    s = text
+    # Перенос строки и закрывающие структурные теги → \n
+    s = re.sub(r'<\s*br\s*/?\s*>', '\n', s, flags=re.IGNORECASE)
+    s = re.sub(r'<\s*/\s*(p|div|h[1-6]|tr)\s*>', '\n', s, flags=re.IGNORECASE)
+    # Элементы списка → маркер с новой строки
+    s = re.sub(r'<\s*li[^>]*>', '\n• ', s, flags=re.IGNORECASE)
+    s = re.sub(r'<\s*/\s*(ul|ol)\s*>', '\n', s, flags=re.IGNORECASE)
+    # Всё остальное — удалить
+    s = re.sub(r'<[^>]+>', '', s)
+    # HTML-сущности (&nbsp;, &amp; и т.п.)
+    s = html.unescape(s)
+    # Схлопнуть лишние пробелы и пустые строки
+    s = re.sub(r'[ \t]+', ' ', s)
+    s = re.sub(r' *\n *', '\n', s)
+    s = re.sub(r'\n{3,}', '\n\n', s)
+    return s.strip()
 
 
 def _truncate_words(text, max_len=500):
-    """Обрезает текст до max_len символов по границе слова, в конце ставит '…'."""
+    """Обрезает текст до max_len символов по границе слова. Если резалось —
+    в конце явный маркер '[…] ⤵', указывающий на ссылку под описанием."""
     if not text or len(text) <= max_len:
         return text or ''
-    cut = text[:max_len].rsplit(' ', 1)[0].rstrip(' ,;:.-')
-    return f'{cut}…'
+    cut = text[:max_len].rsplit(' ', 1)[0].rstrip(' ,;:.-\n')
+    return f'{cut} […] ⤵'
 
 
 CONTACT_TIMEOUT_PLACEHOLDER = 'тайм-аут запроса'
@@ -176,7 +194,7 @@ def create_report(orders):
             customer.get('first_name') or '',          # I first_name
             customer.get('last_name') or '',           # J last_name
             '',                                        # K email — обогащается из detail
-            _strip_html(order.get('descr')),           # L mesage (текст проекта без HTML)
+            _html_to_text(order.get('descr')),         # L mesage (текст проекта без HTML)
             order.get('site'),                         # M site
             order.get('order_url'),                    # N order_url
             created[:16].replace('T', ' '),            # O post_dtime
