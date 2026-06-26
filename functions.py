@@ -22,6 +22,18 @@ gc = gspread.service_account(filename=SERVICE_ACCOUNT_FILE)
 NEW_ENDPOINT_CUTOFF = '2026-06-15T12:00:00+03:00'
 
 
+# freelance.kz и free.uz после релиза обязательно требуют префикс /ru/ в API.
+# Без него отдают 302 на /ru/..., и при follow-redirect POST превращается в GET
+# → платформа отвечает «Метод GET не разрешен».
+_LOCALIZED_SITES = ('freelance.kz', 'free.uz')
+
+
+def api_base(site):
+    if site in _LOCALIZED_SITES:
+        return f'https://{site}/ru'
+    return f'https://{site}'
+
+
 def get_sheet_range(spread, incom_sheet, incom_range):
     sh = gc.open(spread)
     data = sh.worksheet(incom_sheet).get(incom_range)
@@ -66,7 +78,7 @@ def get_orders_from_sites(auth_token):
     tokens_by_site = {}
 
     for site in ['rubrain.com', 'junbrain.com', 'engibrain.com', 'freelance.kz', 'free.uz']:
-        url = f'https://{site}/api/v2/project/manager/control/list/'
+        url = f'{api_base(site)}/api/v2/project/manager/control/list/'
         site_token = auth_token
         try:
             response = requests.get(url, params=params, headers=headers)
@@ -78,7 +90,7 @@ def get_orders_from_sites(auth_token):
                 site_token = get_tokens(
                     username=os.getenv('SITE_USERNAME'),
                     password=os.getenv('SITE_PASSWORD'),
-                    url=f'https://{site}/api/auth/login/?active_lang=ru',
+                    url=f'{api_base(site)}/api/auth/login/?active_lang=ru',
                 )['access']
 
                 response = requests.get(
@@ -154,7 +166,7 @@ def enrich_with_contacts(rows, tokens_by_site):
             continue
         try:
             r = requests.get(
-                f'https://{site}/api/projects/{project_id}/',
+                f'{api_base(site)}/api/projects/{project_id}/',
                 headers={'authorization': f'Bearer {token}'},
                 timeout=15,
             )
