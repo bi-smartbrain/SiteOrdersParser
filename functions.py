@@ -77,7 +77,9 @@ def get_orders_from_sites(auth_token):
     orders = []
     tokens_by_site = {}
 
-    for site in ['rubrain.com', 'junbrain.com', 'engibrain.com', 'freelance.kz', 'free.uz']:
+    # smartbrain.io — англоязычный клон rubrain.com, тот же бэкенд/БД.
+    # Переехали с rubrain.com, т.к. он периодически недоступен и рушит весь цикл.
+    for site in ['smartbrain.io', 'junbrain.com', 'engibrain.com', 'freelance.kz', 'free.uz']:
         url = f'{api_base(site)}/api/v2/project/manager/control/list/'
         site_token = auth_token
         try:

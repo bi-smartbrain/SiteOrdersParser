@@ -2,7 +2,7 @@ import requests
 
 
 def get_tokens(username, password,
-        url="https://rubrain.com/api/auth/login/?active_lang=ru"):
+        url="https://smartbrain.io/api/auth/login/?active_lang=ru"):
 
     response = requests.post(url, json={
         'email': username,
