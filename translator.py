@@ -4,7 +4,7 @@ from groq import Groq
 
 # 'dummy' fallback allows module import and test patching when key is absent;
 # in production the key is always present via /opt/secrets/.env.
-groq_client = Groq(api_key=os.getenv('GROQ_API_KEY') or 'dummy')
+groq_client = Groq(api_key=os.getenv('GROQ_API_KEY_BI') or 'dummy')
 
 _PROMPT_TEMPLATE = """\
 Определи язык текста и переведи на русский.
