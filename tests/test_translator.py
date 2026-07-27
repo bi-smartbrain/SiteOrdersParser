@@ -1,6 +1,7 @@
 import json
 from unittest.mock import patch, MagicMock
 import pytest
+from translator import translate_if_needed
 
 
 def _mock_groq_response(content: str):
@@ -18,7 +19,6 @@ def test_translate_english():
     payload = json.dumps({"lang": "EN", "name_ru": "Дизайн сайта", "descr_ru": "Нужен дизайнер"})
     with patch('translator.groq_client') as mock_client:
         mock_client.chat.completions.create.return_value = _mock_groq_response(payload)
-        from translator import translate_if_needed
         lang, name_ru, descr_ru = translate_if_needed("Website design", "Need a designer")
     assert lang == "EN"
     assert name_ru == "Дизайн сайта"
@@ -29,15 +29,15 @@ def test_russian_passthrough():
     payload = json.dumps({"lang": "RU", "name_ru": "Дизайн сайта", "descr_ru": "Нужен дизайнер"})
     with patch('translator.groq_client') as mock_client:
         mock_client.chat.completions.create.return_value = _mock_groq_response(payload)
-        from translator import translate_if_needed
         lang, name_ru, descr_ru = translate_if_needed("Дизайн сайта", "Нужен дизайнер")
     assert lang == "RU"
+    assert name_ru == "Дизайн сайта"
+    assert descr_ru == "Нужен дизайнер"
 
 
 def test_fallback_on_invalid_json():
     with patch('translator.groq_client') as mock_client:
         mock_client.chat.completions.create.return_value = _mock_groq_response("not json at all")
-        from translator import translate_if_needed
         lang, name_ru, descr_ru = translate_if_needed("Test", "Test descr")
     assert lang == "RU"
     assert name_ru == "Test"
@@ -47,7 +47,6 @@ def test_fallback_on_invalid_json():
 def test_fallback_on_groq_exception():
     with patch('translator.groq_client') as mock_client:
         mock_client.chat.completions.create.side_effect = Exception("connection error")
-        from translator import translate_if_needed
         lang, name_ru, descr_ru = translate_if_needed("Test", "Test descr")
     assert lang == "RU"
     assert name_ru == "Test"
