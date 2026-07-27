@@ -8,6 +8,7 @@ from gspread.utils import rowcol_to_a1, ValueInputOption
 from tg_logger import logger, token as TG_TOKEN, chat_id_3 as CHAT_BRAINS, chat_id_5 as CHAT_FREELANCE
 from env_loader import SECRETS_PATH
 from currency_rates import convert as convert_currency
+from translator import translate_if_needed
 
 # Получаем путь к файлу из переменных окружения
 SERVICE_ACCOUNT_FILE = os.path.join(SECRETS_PATH, 'service_account.json')
@@ -281,15 +282,16 @@ def _format_mentions():
     return ' '.join(f'<i>{m}</i>' for m in FREELANCE_MENTIONS)
 
 
-def build_notification(item):
+def build_notification(item, lang='RU'):
     """Собирает текст уведомления в формате HTML (parse_mode=HTML)."""
     freelance_regions = {'freelance.kz': 'КАЗАХСТАН', 'free.uz': 'УЗБЕКИСТАН'}
     site = item[12]
     descr_short = _truncate_words(item[11] or '', 500)
 
+    lang_marker = f'  🌐 {lang}→RU' if lang != 'RU' else ''
     lines = [
         '',
-        '🔔️ Новая заявка на проект',
+        f'🔔️ Новая заявка на проект{lang_marker}',
         '',
         f'<b>Дата:</b> {_html_escape(item[14])}',
     ]
@@ -339,7 +341,14 @@ def take_notifications(new_rows):
         site = item[12]
         project_id = item[0]
         target_chat = CHAT_FREELANCE if site in ('freelance.kz', 'free.uz') else CHAT_BRAINS
-        message = build_notification(item)
+
+        lang, name_ru, descr_ru = translate_if_needed(item[17], item[11])
+        if lang != 'RU':
+            item = list(item)
+            item[17] = name_ru
+            item[11] = descr_ru
+
+        message = build_notification(item, lang)
         ok, info = _send_telegram_message(target_chat, message)
         if not ok:
             logger.critical(
