@@ -4,7 +4,7 @@ import re
 import html
 import requests
 import gspread
-from gspread.utils import rowcol_to_a1, ValueInputOption
+from gspread.utils import ValueInputOption
 from tg_logger import logger, token as TG_TOKEN, chat_id_3 as CHAT_BRAINS, chat_id_5 as CHAT_FREELANCE
 from env_loader import SECRETS_PATH
 from currency_rates import convert as convert_currency
@@ -53,21 +53,7 @@ def write_spread_range(spread, sheet, range, value):
 def add_report_to_sheet(spread, sheet, report):
     sh = gc.open(spread)
     worksheet = sh.worksheet(sheet)
-
-    # Получить размеры отчета (количество строк и столбцов)
-    num_rows = len(report)
-    num_cols = len(report[0])
-
-    # Получить диапазон для записи данных
-    q_rows = len(worksheet.get_all_values())  # узнаем кол-во уже заполненных на листе строк
-
-    start_cell = rowcol_to_a1(q_rows + 1, 1)
-    end_cell = rowcol_to_a1(q_rows + num_rows, num_cols)
-
-    # Записать значения в диапазон
-    cell_range = f"{start_cell}:{end_cell}"
-    worksheet.update(cell_range, report, value_input_option=ValueInputOption.user_entered)
-
+    worksheet.append_rows(report, value_input_option=ValueInputOption.user_entered)
     print("Отчет добавлен")
 
 
