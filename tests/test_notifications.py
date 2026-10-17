@@ -76,7 +76,7 @@ def test_take_notifications_calls_translate_and_passes_lang():
     item = _make_item(name='Hello project', descr='Hello description')
 
     with patch('functions.translate_if_needed', return_value=('EN', 'Привет проект', 'Привет описание')) as mock_translate, \
-         patch('functions._send_telegram_message', return_value=(True, 'ok')) as mock_send, \
+         patch('functions._send_telegram_message', return_value=(True, 'ok', 111)) as mock_send, \
          patch('time.sleep'):
         functions.take_notifications([item])
 
@@ -93,7 +93,7 @@ def test_take_notifications_ru_no_translation_replacement():
     item = _make_item(name='Русский проект', descr='Русское описание')
 
     with patch('functions.translate_if_needed', return_value=('RU', 'Русский проект', 'Русское описание')) as mock_translate, \
-         patch('functions._send_telegram_message', return_value=(True, 'ok')) as mock_send, \
+         patch('functions._send_telegram_message', return_value=(True, 'ok', 111)) as mock_send, \
          patch('time.sleep'):
         functions.take_notifications([item])
 

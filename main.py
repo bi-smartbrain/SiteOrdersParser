@@ -10,6 +10,7 @@ from tg_logger import logger
 from get_tokens import get_tokens
 import functions as f
 from env_loader import SECRETS_PATH
+from sent_state import SentState, order_key
 
 
 class OrdersManager:
@@ -20,6 +21,8 @@ class OrdersManager:
         self.username = os.getenv('SITE_USERNAME')
         self.password = os.getenv('SITE_PASSWORD')
         self.auth_token = None
+        self.state = SentState()
+        self.seed_from_sites = self.state.fresh  # файла состояния ещё не было
 
     def load_old_report(self):
         """Загрузка отчета из гугл-таблицы при запуске/перезапуске скрипта"""
@@ -28,6 +31,10 @@ class OrdersManager:
             print("Загрузка отчета из Google Таблицы...")
             self.old_report = f.get_sheet_range(self.spread, self.sheet, 'A2:S')
             print(f"Загружено {len(self.old_report)} строк")
+            if self.state.fresh:
+                # Первый запуск с файлом состояния: всё, что уже есть в таблице, считаем отправленным
+                self.state.seed(order_key(r) for r in self.old_report if len(r) > 12)
+                print(f"Файл состояния создан, добавлено {len(self.state.entries)} ключей из таблицы")
 
     def get_tokens(self):
         """Получение токена авторизации"""
@@ -40,6 +47,11 @@ class OrdersManager:
         print("Получаем последние 100 заявок с сайтов...")
         orders, tokens_by_site = f.get_orders_from_sites(self.auth_token)
         report = f.create_report(orders)
+
+        if self.seed_from_sites:
+            # Состояния ещё не было: всё, что сейчас отдают сайты, уже существует — не уведомляем о нём
+            self.state.seed(order_key(r) for r in report[1:])
+            self.seed_from_sites = False
 
         # Сравниваем с имеющимся отчетом
         new_rows = f.get_new_report_rows(self.old_report, report)
@@ -54,7 +66,7 @@ class OrdersManager:
             f.add_report_to_sheet(self.spread, self.sheet, new_rows)
 
             # Отправляем уведомления
-            f.take_notifications(new_rows)
+            f.take_notifications(new_rows, self.state)
 
             # Обновляем локальный отчет, добавляя новые строки
             self.old_report.extend(new_rows)

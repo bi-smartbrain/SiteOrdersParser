@@ -9,6 +9,7 @@ from tg_logger import logger, token as TG_TOKEN, chat_id_3 as CHAT_BRAINS, chat_
 from env_loader import SECRETS_PATH
 from currency_rates import convert as convert_currency
 from translator import translate_if_needed
+from sent_state import order_key
 
 # Получаем путь к файлу из переменных окружения
 SERVICE_ACCOUNT_FILE = os.path.join(SECRETS_PATH, 'service_account.json')
@@ -301,7 +302,7 @@ def build_notification(item, lang='RU'):
 
 
 def _send_telegram_message(chat_id, message):
-    """Прямой POST в Bot API. Возвращает (ok: bool, info: str с диагностикой)."""
+    """Прямой POST в Bot API. Возвращает (ok, info с диагностикой, message_id или None)."""
     try:
         r = requests.post(
             f'https://api.telegram.org/bot{TG_TOKEN}/sendMessage',
@@ -314,15 +315,37 @@ def _send_telegram_message(chat_id, message):
             timeout=30,
         )
     except Exception as e:
-        return False, f'exception: {e}'
+        return False, f'exception: {e}', None
     if r.status_code == 200:
-        return True, 'ok'
-    return False, f'status {r.status_code}: {r.text[:300]}'
+        try:
+            message_id = r.json()['result']['message_id']
+        except (ValueError, KeyError, TypeError):
+            message_id = None
+        return True, 'ok', message_id
+    return False, f'status {r.status_code}: {r.text[:300]}', None
 
 
-def take_notifications(new_rows):
+# Если за один цикл «новых» заявок больше этого числа — это почти наверняка сбой
+# дедупликации (перезапуск, правка таблицы), а не реальный поток: в чат не шлём.
+MAX_BURST = 10
+
+
+def take_notifications(new_rows, state=None):
     """Шлёт уведомление по каждой новой заявке в общий чат напрямую через Bot API.
-    При неудаче пишет critical-лог в личку, но не прерывает обработку остальных."""
+    При неудаче пишет critical-лог в личку, но не прерывает обработку остальных.
+
+    state (SentState) — файл отправленных заявок: уже отправленные пропускаются,
+    при массовом всплеске (> MAX_BURST) уведомления подавляются."""
+    if state is not None:
+        new_rows = [r for r in new_rows if not state.has(order_key(r))]
+        if len(new_rows) > MAX_BURST:
+            logger.critical(
+                f'⚠️ Подавлено {len(new_rows)} уведомлений: подозрение на сбой дедупликации '
+                f'(порог {MAX_BURST}). Заявки помечены как виденные, в чат не отправлены.'
+            )
+            for r in new_rows:
+                state.mark(order_key(r), suppressed=True)
+            return
     for item in new_rows:
         site = item[12]
         project_id = item[0]
@@ -335,7 +358,10 @@ def take_notifications(new_rows):
             item[11] = descr_ru
 
         message = build_notification(item, lang)
-        ok, info = _send_telegram_message(target_chat, message)
+        ok, info, message_id = _send_telegram_message(target_chat, message)
+        if state is not None:
+            # помечаем и при неудаче: иначе упавшая отправка будет повторяться каждый цикл
+            state.mark(order_key(item), chat_id=target_chat, message_id=message_id)
         if not ok:
             logger.critical(
                 f'❌ Не удалось отправить уведомление о проекте {project_id} ({site}) '
