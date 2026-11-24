@@ -2,14 +2,23 @@ import time
 import os
 import re
 import html
+from typing import NamedTuple, Optional
+
 import requests
 import gspread
 from gspread.utils import ValueInputOption
-from tg_logger import logger, token as TG_TOKEN, chat_id_3 as CHAT_BRAINS, chat_id_5 as CHAT_FREELANCE
+from tg_logger import (
+    logger,
+    token as TG_TOKEN,
+    chat_id_1 as CHAT_OWNER,
+    chat_id_3 as CHAT_BRAINS,
+    chat_id_5 as CHAT_FREELANCE,
+)
 from env_loader import SECRETS_PATH
 from currency_rates import convert as convert_currency
 from translator import translate_if_needed
 from sent_state import order_key
+from delivery import age_hours
 
 # Получаем путь к файлу из переменных окружения
 SERVICE_ACCOUNT_FILE = os.path.join(SECRETS_PATH, 'service_account.json')
@@ -301,8 +310,81 @@ def build_notification(item, lang='RU'):
     return '\n'.join(lines)
 
 
+class SendResult(NamedTuple):
+    """Результат одной попытки отправки.
+
+    error_class:
+      none      — доставлено, message_id получен;
+      definite  — точно не доставлено (соединение не установилось, 4xx кроме 429,
+                  429 с retry_after): повторять безопасно;
+      ambiguous — неизвестно, создал ли Telegram сообщение (reset, read timeout,
+                  RemoteDisconnected, 5xx, 200 без message_id): немедленный повтор
+                  запрещён, иначе получаем дубль;
+      permanent — повтор бессмысленен (400/401/403/404): в needs_review и алерт;
+      deferred  — попытку не делали: не хватает бюджета цикла.
+    """
+    ok: bool
+    message_id: Optional[int]
+    error_class: str
+    detail: str
+    retry_after: Optional[int] = None
+
+
+# Таймаут одной попытки не меняем (30 с): согласовано в ревью, уменьшение
+# увеличило бы долю неоднозначных ошибок и, значит, отложенных повторов.
+SEND_TIMEOUT = 30
+SEND_ATTEMPTS = 3            # отправок на одну заявку за один цикл
+SEND_RETRY_DELAYS = (5, 15)  # паузы между попытками внутри цикла
+MAX_AMBIGUOUS_SENDS = 2      # при неоднозначной ошибке — максимум две отправки вообще
+MAX_RETRY_AGE_HOURS = 24     # старше суток автоматически не досылаем, отдаём человеку
+CYCLE_RETRY_BUDGET = 90      # секунд на все ретраи одного цикла
+FLUSH_MAX_ITEMS = 5          # сколько заявок из очереди пробуем за цикл
+INTER_MESSAGE_DELAY = 3      # пауза между разными заявками после успешной отправки
+ALERT_COOLDOWN = 1800        # антиспам алертов в личку
+
+_AMBIGUOUS_EXC_NAMES = {
+    'ReadTimeout',
+    'ConnectionResetError',
+    'BrokenPipeError',
+    'RemoteDisconnected',
+    'ProtocolError',
+    'IncompleteRead',
+}
+_DEFINITE_EXC_NAMES = {'ConnectTimeout'}
+
+
+def _walk_exceptions(exc):
+    """Все исключения в цепочке: requests заворачивает ConnectionResetError в
+    ConnectionError, поэтому класс ошибки надо искать и в args, и в cause."""
+    seen = set()
+    stack = [exc]
+    while stack:
+        cur = stack.pop()
+        if cur is None or id(cur) in seen:
+            continue
+        seen.add(id(cur))
+        yield cur
+        stack.append(cur.__cause__)
+        stack.append(cur.__context__)
+        for arg in getattr(cur, 'args', ()):
+            if isinstance(arg, BaseException):
+                stack.append(arg)
+
+
+def _classify_exception(exc):
+    """definite — соединение не установилось/запрос отвергнут; ambiguous — не знаем."""
+    names = {type(e).__name__ for e in _walk_exceptions(exc)}
+    if names & _AMBIGUOUS_EXC_NAMES:
+        return 'ambiguous'
+    if names & _DEFINITE_EXC_NAMES:
+        return 'definite'
+    # ConnectionError без признаков reset/read-timeout: отказ соединения, DNS,
+    # прокси — запрос до Telegram не дошёл.
+    return 'definite'
+
+
 def _send_telegram_message(chat_id, message):
-    """Прямой POST в Bot API. Возвращает (ok, info с диагностикой, message_id или None)."""
+    """Один POST в Bot API, без ретраев. Возвращает SendResult."""
     try:
         r = requests.post(
             f'https://api.telegram.org/bot{TG_TOKEN}/sendMessage',
@@ -312,17 +394,153 @@ def _send_telegram_message(chat_id, message):
                 'parse_mode': 'HTML',
                 'disable_web_page_preview': 'true',
             },
-            timeout=30,
+            timeout=SEND_TIMEOUT,
         )
     except Exception as e:
-        return False, f'exception: {e}', None
+        return SendResult(False, None, _classify_exception(e), f'{type(e).__name__}: {e}')
+
     if r.status_code == 200:
         try:
             message_id = r.json()['result']['message_id']
         except (ValueError, KeyError, TypeError):
-            message_id = None
-        return True, 'ok', message_id
-    return False, f'status {r.status_code}: {r.text[:300]}', None
+            # 200 без id — не доказательство доставки
+            return SendResult(False, None, 'ambiguous', '200 без message_id')
+        return SendResult(True, message_id, 'none', 'ok')
+
+    if r.status_code == 429:
+        retry_after = None
+        try:
+            retry_after = int(r.json()['parameters']['retry_after'])
+        except (ValueError, KeyError, TypeError):
+            pass
+        return SendResult(False, None, 'definite', '429 rate limit', retry_after)
+
+    if 400 <= r.status_code < 500:
+        return SendResult(False, None, 'permanent', f'status {r.status_code}: {r.text[:300]}')
+
+    return SendResult(False, None, 'ambiguous', f'status {r.status_code}: {r.text[:300]}')
+
+
+def _numeric_chat_id(chat_id):
+    """Числовой id для журнала. В .env chat_id хранится с ярлыком после '#'.
+
+    Только для журнала: в API уходит сырое значение, оно проверено и работает.
+    """
+    return str(chat_id).split('#')[0]
+
+
+def _deliver(entry, state, outbox, journal, deadline):
+    """Отправляет одну заявку по политике ретраев. Заявка уже лежит в outbox
+    (status='pending'), чтобы крэш не потерял её между попытками.
+
+    Возвращает (ok, SendResult)."""
+    key = entry['order']
+    chat_id = entry['chat_id']
+    message = entry['text']
+    sends = 0
+    result = None
+
+    while sends < SEND_ATTEMPTS:
+        if time.monotonic() >= deadline:
+            result = SendResult(False, None, 'deferred', 'бюджет цикла исчерпан')
+            break
+
+        result = _send_telegram_message(chat_id, message)
+        sends += 1
+        entry['attempts'] = entry.get('attempts', 0) + 1
+        entry['last_error'] = None if result.ok else result.detail
+        entry['status'] = 'sent' if result.ok else 'failed'
+
+        if journal is not None:
+            journal.record(
+                order=key,
+                project=entry.get('project'),
+                site=entry.get('site'),
+                chat_id=chat_id,
+                chat_id_num=_numeric_chat_id(chat_id),
+                message_id=result.message_id,
+                attempt=entry['attempts'],
+                result=('sent' if result.ok else
+                        'ambiguous' if result.error_class == 'ambiguous' else 'failed'),
+                error_class=result.error_class,
+                possible_duplicate=entry.get('ambiguous', 0) > 0,
+                error=None if result.ok else result.detail,
+            )
+
+        if result.ok:
+            if state is not None:
+                state.mark(key, chat_id=chat_id, message_id=result.message_id,
+                           attempts=entry['attempts'])
+            if outbox is not None:
+                outbox.remove(key)
+            return True, result
+
+        if result.error_class == 'permanent':
+            entry['needs_review'] = True
+            if outbox is not None:
+                outbox.save()
+            return False, result
+
+        if result.error_class == 'ambiguous':
+            # Повторять сразу нельзя: не знаем, создалось ли сообщение.
+            # Откладываем до следующего цикла, не больше MAX_AMBIGUOUS_SENDS.
+            entry['ambiguous'] = entry.get('ambiguous', 0) + 1
+            if entry['ambiguous'] >= MAX_AMBIGUOUS_SENDS:
+                entry['needs_review'] = True
+            if outbox is not None:
+                outbox.save()
+            return False, result
+
+        # definite: можно повторять, но не дольше бюджета цикла
+        if outbox is not None:
+            outbox.save()
+        if sends >= SEND_ATTEMPTS:
+            break
+        if result.retry_after:
+            delay = result.retry_after
+        else:
+            delay = SEND_RETRY_DELAYS[min(sends - 1, len(SEND_RETRY_DELAYS) - 1)]
+        if time.monotonic() + delay >= deadline:
+            break
+        time.sleep(delay)
+
+    return False, result
+
+
+_ALERT_LAST = {}
+
+
+def alert_owner(text, key='delivery'):
+    """Алерт владельцу в личку напрямую через Bot API (не через logger).
+
+    У loguru-хендлера в tg_logger.py уровень DEBUG, то есть каждое сообщение
+    лога уже уходит в этот же личный чат. Поэтому диагностика попыток идёт
+    только в stdout контейнера, а сюда — один агрегированный алерт с антиспамом.
+    """
+    now = time.monotonic()
+    if now - _ALERT_LAST.get(key, 0.0) < ALERT_COOLDOWN:
+        print(f'alert_owner: подавлено антиспамом ({key})')
+        return False
+    _ALERT_LAST[key] = now
+    res = _send_telegram_message(CHAT_OWNER, text)
+    if not res.ok:
+        print(f'alert_owner: не удалось отправить алерт в личку: {res.detail}')
+    return res.ok
+
+
+def notify_undelivered(failed_keys, unsent):
+    """Один алерт за цикл: сколько не доставлено и по каким заявкам."""
+    if not failed_keys and not unsent:
+        return False
+    keys = ', '.join(failed_keys[:10]) or '-'
+    text = (
+        f'⚠️ SiteOrdersParser: не доставлено уведомлений: {unsent}.\n'
+        f'Проблемные заявки: {keys}\n'
+        f'Повтор в следующем цикле. Заявки с постоянной ошибкой (4xx) и старше суток '
+        f'автоматически не досылаются: нужна ручная проверка.\n'
+        f'Журнал: logs/delivery-*.jsonl, очередь: logs/outbox.json'
+    )
+    return alert_owner(text)
 
 
 # Если за один цикл «новых» заявок больше этого числа — это почти наверняка сбой
@@ -330,12 +548,23 @@ def _send_telegram_message(chat_id, message):
 MAX_BURST = 10
 
 
-def take_notifications(new_rows, state=None):
+def take_notifications(new_rows, state=None, outbox=None, journal=None, deadline=None):
     """Шлёт уведомление по каждой новой заявке в общий чат напрямую через Bot API.
-    При неудаче пишет critical-лог в личку, но не прерывает обработку остальных.
 
-    state (SentState) — файл отправленных заявок: уже отправленные пропускаются,
-    при массовом всплеске (> MAX_BURST) уведомления подавляются."""
+    state (SentState) — файл отправленных заявок: уже доставленные пропускаются,
+    при массовом всплеске (> MAX_BURST) уведомления подавляются.
+    outbox (Outbox) — очередь недоставленного: запись создаётся ДО первой попытки,
+    «отправлено» ставится только при успехе.
+    journal (DeliveryJournal) — журнал попыток для сверки с фактическим чатом.
+    deadline — момент (time.monotonic), после которого ретраи прекращаются.
+
+    Возвращает {'sent': n, 'failed': [ключи]}.
+    """
+    if deadline is None:
+        deadline = time.monotonic() + CYCLE_RETRY_BUDGET
+    failed = []
+    sent = 0
+
     if state is not None:
         new_rows = [r for r in new_rows if not state.has(order_key(r))]
         if len(new_rows) > MAX_BURST:
@@ -345,7 +574,15 @@ def take_notifications(new_rows, state=None):
             )
             for r in new_rows:
                 state.mark(order_key(r), suppressed=True)
-            return
+                if journal is not None:
+                    journal.record(
+                        order=order_key(r), project=r[0], site=r[12],
+                        chat_id=None, chat_id_num=None, message_id=None,
+                        attempt=0, result='suppressed', error_class='suppressed',
+                        possible_duplicate=False, error=f'MAX_BURST={MAX_BURST}',
+                    )
+            return {'sent': 0, 'failed': []}
+
     for item in new_rows:
         site = item[12]
         project_id = item[0]
@@ -358,13 +595,65 @@ def take_notifications(new_rows, state=None):
             item[11] = descr_ru
 
         message = build_notification(item, lang)
-        ok, info, message_id = _send_telegram_message(target_chat, message)
-        if state is not None:
-            # помечаем и при неудаче: иначе упавшая отправка будет повторяться каждый цикл
-            state.mark(order_key(item), chat_id=target_chat, message_id=message_id)
-        if not ok:
-            logger.critical(
-                f'❌ Не удалось отправить уведомление о проекте {project_id} ({site}) '
-                f'в чат {target_chat}: {info}'
-            )
-        time.sleep(3)
+        key = order_key(item)
+
+        if outbox is not None:
+            entry = outbox.add(key, message, target_chat, project=project_id, site=site)
+        else:
+            entry = {'order': key, 'chat_id': target_chat, 'text': message,
+                     'project': project_id, 'site': site, 'attempts': 0,
+                     'ambiguous': 0, 'needs_review': False}
+
+        ok, result = _deliver(entry, state, outbox, journal, deadline)
+        if ok:
+            sent += 1
+            if time.monotonic() + INTER_MESSAGE_DELAY < deadline:
+                time.sleep(INTER_MESSAGE_DELAY)
+        else:
+            failed.append(key)
+            detail = result.detail if result is not None else 'нет результата'
+            print(f'❌ Не удалось отправить уведомление о проекте {project_id} ({site}) '
+                  f'в чат {target_chat}: {detail}')
+
+    return {'sent': sent, 'failed': failed}
+
+
+def flush_outbox(outbox, state=None, journal=None, deadline=None, max_items=FLUSH_MAX_ITEMS):
+    """Повторяет недоставленное из предыдущих циклов.
+
+    Пропускает записи, которые уже доставлены (крэш между state.mark и удалением
+    из outbox), отданные человеку (needs_review) и старше MAX_RETRY_AGE_HOURS.
+    """
+    result = {'sent': 0, 'failed': []}
+    if outbox is None:
+        return result
+    if deadline is None:
+        deadline = time.monotonic() + CYCLE_RETRY_BUDGET
+
+    # Порядок — FIFO, но needs_review не занимает место в квоте: иначе пять
+    # «отданных человеку» записей заблокировали бы очередь навсегда.
+    processed = 0
+    for key in outbox.keys():
+        if processed >= max_items or time.monotonic() >= deadline:
+            break
+        entry = outbox.get(key)
+        if entry is None:
+            continue
+        if entry.get('needs_review'):
+            continue
+        processed += 1
+        if state is not None and state.has(key):
+            outbox.remove(key)
+            continue
+        if age_hours(entry) > MAX_RETRY_AGE_HOURS:
+            entry['needs_review'] = True
+            entry['last_error'] = entry.get('last_error') or 'старше суток, авторетраж остановлен'
+            outbox.save()
+            result['failed'].append(key)
+            continue
+        ok, _ = _deliver(entry, state, outbox, journal, deadline)
+        if ok:
+            result['sent'] += 1
+        else:
+            result['failed'].append(key)
+    return result

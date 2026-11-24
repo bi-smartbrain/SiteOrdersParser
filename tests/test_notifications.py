@@ -14,6 +14,7 @@ for mod in ['gspread', 'tg_logger', 'env_loader', 'currency_rates']:
 _tg = sys.modules['tg_logger']
 _tg.logger = types.SimpleNamespace(critical=lambda *a, **k: None)
 _tg.token = 'fake-token'
+_tg.chat_id_1 = 'fake-chat-owner'
 _tg.chat_id_3 = 'fake-chat-brains'
 _tg.chat_id_5 = 'fake-chat-freelance'
 
@@ -35,6 +36,8 @@ _cr = sys.modules['currency_rates']
 _cr.convert = lambda amount, from_cur, to_cur: None
 
 import functions
+
+OK = functions.SendResult(True, 111, 'none', 'ok')
 
 
 def _make_item(name='Test project', descr='Test description'):
@@ -76,8 +79,8 @@ def test_take_notifications_calls_translate_and_passes_lang():
     item = _make_item(name='Hello project', descr='Hello description')
 
     with patch('functions.translate_if_needed', return_value=('EN', 'Привет проект', 'Привет описание')) as mock_translate, \
-         patch('functions._send_telegram_message', return_value=(True, 'ok', 111)) as mock_send, \
-         patch('time.sleep'):
+         patch('functions._send_telegram_message', return_value=OK) as mock_send, \
+         patch('functions.time.sleep'):
         functions.take_notifications([item])
 
     mock_translate.assert_called_once_with('Hello project', 'Hello description')
@@ -93,8 +96,8 @@ def test_take_notifications_ru_no_translation_replacement():
     item = _make_item(name='Русский проект', descr='Русское описание')
 
     with patch('functions.translate_if_needed', return_value=('RU', 'Русский проект', 'Русское описание')) as mock_translate, \
-         patch('functions._send_telegram_message', return_value=(True, 'ok', 111)) as mock_send, \
-         patch('time.sleep'):
+         patch('functions._send_telegram_message', return_value=OK) as mock_send, \
+         patch('functions.time.sleep'):
         functions.take_notifications([item])
 
     mock_translate.assert_called_once()

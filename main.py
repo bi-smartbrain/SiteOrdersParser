@@ -11,6 +11,7 @@ from get_tokens import get_tokens
 import functions as f
 from env_loader import SECRETS_PATH
 from sent_state import SentState, order_key
+from delivery import Outbox, DeliveryJournal, write_health
 
 
 class OrdersManager:
@@ -22,6 +23,8 @@ class OrdersManager:
         self.password = os.getenv('SITE_PASSWORD')
         self.auth_token = None
         self.state = SentState()
+        self.outbox = Outbox()
+        self.journal = DeliveryJournal()
         self.seed_from_sites = self.state.fresh  # файла состояния ещё не было
 
     def load_old_report(self):
@@ -56,6 +59,10 @@ class OrdersManager:
         # Сравниваем с имеющимся отчетом
         new_rows = f.get_new_report_rows(self.old_report, report)
 
+        # Общий бюджет на ретраи этого цикла: новые заявки и очередь досылки
+        deadline = time.monotonic() + f.CYCLE_RETRY_BUDGET
+        failed = []
+
         if new_rows:
             print(f"Найдено {len(new_rows)} новых заявок")
 
@@ -65,13 +72,40 @@ class OrdersManager:
             # Добавляем новые строки в Google Таблицу
             f.add_report_to_sheet(self.spread, self.sheet, new_rows)
 
-            # Отправляем уведомления
-            f.take_notifications(new_rows, self.state)
+            # Отправляем уведомления: отметка «отправлено» ставится только при успехе,
+            # при неудаче заявка остаётся в outbox и повторяется в следующих циклах
+            try:
+                sent_info = f.take_notifications(
+                    new_rows, self.state,
+                    outbox=self.outbox, journal=self.journal, deadline=deadline,
+                )
+                failed.extend(sent_info['failed'])
+            except Exception as e:
+                logger.critical(f'❌ SiteOrdersParser: сбой отправки уведомлений: {e}')
 
             # Обновляем локальный отчет, добавляя новые строки
             self.old_report.extend(new_rows)
             print(f"Локальный отчет обновлен. Теперь в нем {len(self.old_report)} строк")
 
+        # Досылаем то, что не ушло в предыдущих циклах
+        try:
+            flushed = f.flush_outbox(
+                self.outbox, self.state, self.journal, deadline=deadline,
+            )
+            failed.extend(flushed['failed'])
+        except Exception as e:
+            logger.critical(f'❌ SiteOrdersParser: сбой досылки очереди: {e}')
+
+        unsent = len(self.outbox)
+        if unsent or failed:
+            f.notify_undelivered(failed, unsent)
+            print(f"Не доставлено уведомлений: {unsent} (проблемные в этом цикле: {failed})")
+
+        write_health(
+            unsent=unsent,
+            sent_total=self.state.delivered_count(),
+            last_error=None,
+        )
 
         # Обновляем время последнего обновления в таблице
         updated_at = dt.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -104,6 +138,14 @@ def main():
         except Exception as e:
             print(f"Ошибка: {e}")
             logger.critical(f"\n❌️ SiteOrdersParser ошибка в основном цикле: {str(e)}")
+            try:
+                write_health(
+                    unsent=len(orders_manager.outbox),
+                    sent_total=orders_manager.state.delivered_count(),
+                    last_error=str(e)[:300],
+                )
+            except Exception as health_error:
+                print(f"health.json не записан: {health_error}")
             time.sleep(60)  # Задержка перезапуска
             start_count += 1
             iteration_count = 1
